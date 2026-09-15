@@ -1,0 +1,26 @@
+# ==== Deep Learning (PyTorch) ====
+torch
+torchvision
+torchaudio
+
+# ==== Processamento de Áudio ====
+librosa           # extração de features de áudio (Mel Spectrogram, MFCC, etc)
+soundfile         # leitura/escrita de arquivos de áudio (usado pelo librosa)
+audioread         # backend de decodificação de áudio (mp3, etc)
+
+# ==== Manipulação de Dados ====
+numpy
+pandas
+scikit-learn      # split treino/teste, métricas, encoding de labels
+
+# ==== Visualização ====
+matplotlib
+seaborn           # opcional, útil para matriz de confusão
+
+# ==== Utilitários ====
+tqdm              # barras de progresso durante treino
+tensorboard       # opcional, monitorar métricas de treino
+
+# ==== Dataset FMA ====
+# O pacote oficial de utilidades do FMA (opcional, mas ajuda a carregar metadados)
+# git+https://github.com/mdeff/fma.git
