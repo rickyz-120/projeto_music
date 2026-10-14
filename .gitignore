@@ -1,0 +1,31 @@
+# ===== Dados (pesados, ficam só no computador) =====
+fma_small/
+fma_metadata/
+data_mels/
+*.mp3
+*.npy
+*.npz
+*.zip
+
+# ===== Modelos treinados =====
+*.pt
+*.pth
+checkpoints*/
+
+# ===== Resultados e figuras (geradas pelos scripts) =====
+results*/
+apresentacao/
+tmp_*/
+*.xlsx
+*_log.txt
+
+# ===== Ambiente Python =====
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# ===== Arquivos locais do editor / Claude =====
+.claude/
+CLAUDE.md
+.vscode/
