@@ -2,6 +2,8 @@
 fma_small/
 fma_metadata/
 data_mels/
+data_panns/
+pretrained/
 *.mp3
 *.npy
 *.npz

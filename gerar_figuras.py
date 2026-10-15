@@ -5,6 +5,7 @@ Gera imagens prontas para a apresentação a partir dos resultados REAIS do trei
 
 Uso:
     python gerar_figuras.py --final results_final --train-dir results_v3a
+    python gerar_figuras.py --final results_v4 --out docs/img     (figuras do README)
 
 Saída em apresentacao/:
     01_curvas_treino.png        -> loss e acurácia por época (treino x validação)
@@ -85,7 +86,7 @@ def fig_comparacao(resumo_json, path):
                 ax.text(bar.get_x() + bar.get_width() / 2, v + 0.01, pct(v),
                         ha="center", va="bottom", color=TEXT, fontsize=10)
     ax.axhline(0.125, color=TEXT_2, lw=1, ls="--")
-    ax.text(len(names) - 0.5, 0.135, "acaso (12,5%)", ha="right", color=TEXT_2, fontsize=9)
+    ax.text(-0.45, 0.135, "acaso (12,5%)", ha="left", color=TEXT_2, fontsize=9)
     ax.set_xticks(list(x), names)
     ax.set_ylim(0, 1)
     ax.yaxis.set_major_formatter(fmt_eixo())
@@ -146,23 +147,25 @@ def main():
     parser.add_argument("--final", required=True, help="pasta de resultados do modelo final")
     parser.add_argument("--command", default="python train.py",
                         help="comando exato que foi usado no treino (aparece no print do log)")
+    parser.add_argument("--out", default=OUT_DIR, help="pasta de saída das figuras")
     parser.add_argument("--train-dir", default=None,
                         help="pasta com history.csv/train_log.txt do treino mostrado nas curvas")
     args = parser.parse_args()
     train_dir = args.train_dir or args.final
-    os.makedirs(OUT_DIR, exist_ok=True)
+    out = args.out
+    os.makedirs(out, exist_ok=True)
 
-    fig_curvas(train_dir, os.path.join(OUT_DIR, "01_curvas_treino.png"))
+    fig_curvas(train_dir, os.path.join(out, "01_curvas_treino.png"))
     resumo = os.path.join(args.final, "resumo_versoes.json")
     if os.path.exists(resumo):
-        fig_comparacao(resumo, os.path.join(OUT_DIR, "02_comparacao_versoes.png"))
+        fig_comparacao(resumo, os.path.join(out, "02_comparacao_versoes.png"))
     if os.path.exists(os.path.join(args.final, "test_per_class.csv")):
-        fig_por_genero(args.final, os.path.join(OUT_DIR, "03_acuracia_por_genero.png"))
+        fig_por_genero(args.final, os.path.join(out, "03_acuracia_por_genero.png"))
         shutil.copy(os.path.join(args.final, "confusion_matrix.png"),
-                    os.path.join(OUT_DIR, "04_matriz_confusao.png"))
+                    os.path.join(out, "04_matriz_confusao.png"))
     if os.path.exists(os.path.join(train_dir, "train_log.txt")):
-        fig_log(train_dir, os.path.join(OUT_DIR, "05_log_treino.png"), command=args.command)
-    print(f"Figuras salvas em {OUT_DIR}/")
+        fig_log(train_dir, os.path.join(out, "05_log_treino.png"), command=args.command)
+    print(f"Figuras salvas em {out}/")
 
 
 if __name__ == "__main__":

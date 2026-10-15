@@ -7,6 +7,7 @@ torchaudio
 librosa           # extração de features de áudio (Mel Spectrogram, MFCC, etc)
 soundfile         # leitura/escrita de arquivos de áudio (usado pelo librosa)
 audioread         # backend de decodificação de áudio (mp3, etc)
+torchlibrosa      # (Parte 2) Mel Spectrogram dentro da CNN14 pré-treinada do PANNs
 
 # ==== Manipulação de Dados ====
 numpy
