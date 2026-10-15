@@ -1,5 +1,5 @@
 """
-train.py  (versão 3 — v2 em train_v2.py, v1 em train_v1.py)
+train.py  (versão 4 — v2 em versoes_antigas/train_v2.py, v1 em versoes_antigas/train_v1.py)
 Treino da CNN de classificação de gêneros musicais no FMA Small.
 
 Pré-requisito (uma vez só):   python preprocess.py
@@ -7,6 +7,13 @@ Treinar:                      python train.py
 Retomar depois de Ctrl+C:     python train.py          (retoma sozinho do último checkpoint)
 Começar do zero:              python train.py --fresh  (o treino anterior é renomeado, não apagado)
 Teste rápido do código:       python train.py --epochs 2 --max-batches 5 --no-test --ckpt-dir tmp_ckpt --results-dir tmp_results
+
+Novidades da v4 (melhor resultado: 66,0% na validação, contra 64,25% da v3):
+  - EMA dos pesos (--ema 0.999, padrão): validação e best.pt usam uma média móvel dos
+    pesos, que oscila muito menos de uma época para outra.
+  - Mixup desligado por padrão (--mixup 0): com EMA + SpecAugment + label smoothing,
+    o mixup virou regularização demais.
+  - Opções para experimentos: --crop (tamanho do trecho de treino), --seed, --residual.
 
 Novidades da v3 (todas configuráveis pela linha de comando):
   - Avaliação multi-recorte (--eval-crop): a validação/teste classificam trechos de ~10s
@@ -35,6 +42,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.optim.swa_utils import AveragedModel
 from tqdm import tqdm
 import matplotlib
 matplotlib.use("Agg")
@@ -84,9 +92,25 @@ def make_loader(ds, batch_size, shuffle, num_workers):
     )
 
 
+def make_ema_fn(decay):
+    """Atualização da EMA com "aquecimento": no passo n o decaimento usado é
+    min(decay, (1+n)/(10+n)). No começo (pesos ainda aleatórios) a média segue o modelo
+    de perto; depois de alguns milhares de passos passa a usar o decay completo."""
+    def update(ema_params, current_params, num_averaged):
+        n = int(num_averaged)
+        d = min(decay, (1 + n) / (10 + n))
+        for e, c in zip(ema_params, current_params):
+            if e.is_floating_point():
+                e.lerp_(c, 1 - d)   # e = d * e + (1 - d) * c
+            else:
+                e.copy_(c)          # contadores inteiros do BatchNorm: só copia
+    return update
+
+
 def run_epoch(model, loader, criterion, optimizer=None, scaler=None, max_batches=None,
-              mixup_alpha=0.0, eval_crop=None):
-    """Roda uma época. Se optimizer for passado, treina; senão, só avalia."""
+              mixup_alpha=0.0, eval_crop=None, ema=None):
+    """Roda uma época. Se optimizer for passado, treina; senão, só avalia.
+    ema: se passado, atualiza a média móvel dos pesos depois de cada passo de treino."""
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
     use_amp = DEVICE.type == "cuda"
@@ -125,6 +149,8 @@ def run_epoch(model, loader, criterion, optimizer=None, scaler=None, max_batches
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+                if ema is not None:
+                    ema.update_parameters(model)
 
             total_loss += loss.item() * inputs.size(0)
             # (com mixup, a acurácia de treino é só aproximada: comparamos com o rótulo principal)
@@ -196,22 +222,28 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--scheduler", choices=["cosine", "plateau"], default="cosine")
     parser.add_argument("--patience", type=int, default=15, help="early stopping (épocas sem melhorar)")
-    parser.add_argument("--mixup", type=float, default=0.2, help="alpha do mixup (0 desliga)")
+    parser.add_argument("--mixup", type=float, default=0.0, help="alpha do mixup, ex: 0.2 (0 desliga)")
     parser.add_argument("--convs-per-block", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--eval-crop", type=int, default=0,
                         help="tamanho dos recortes na avaliação (0 = música inteira de uma vez)")
+    parser.add_argument("--ema", type=float, default=0.999,
+                        help="decaimento da média móvel dos pesos, ex: 0.999 (0 desliga)")
+    parser.add_argument("--crop", type=int, default=431,
+                        help="tamanho do trecho sorteado no treino, em frames (431 = ~10s)")
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--residual", action="store_true", help="conexões residuais nos blocos (estilo ResNet)")
     parser.add_argument("--fresh", action="store_true", help="ignora checkpoints e começa do zero")
     parser.add_argument("--max-batches", type=int, default=None, help="limita batches por época (teste rápido)")
     parser.add_argument("--no-test", action="store_true", help="não avalia no teste ao final")
-    parser.add_argument("--ckpt-dir", default="checkpoints_v3")
-    parser.add_argument("--results-dir", default="results_v3")
+    parser.add_argument("--ckpt-dir", default="checkpoints_v4")
+    parser.add_argument("--results-dir", default="results_v4")
     parser.add_argument("--workers", type=int, default=NUM_WORKERS)
     parser.add_argument("--data-dir", default=DATA_DIR)
     args = parser.parse_args()
     eval_crop = args.eval_crop or None
 
-    set_seed(SEED)
+    set_seed(args.seed)
     torch.backends.cudnn.benchmark = True  # escolhe os algoritmos de convolução mais rápidos
 
     last_path = os.path.join(args.ckpt_dir, "last.pt")
@@ -236,7 +268,8 @@ def main():
             f.write(msg + "\n")
 
     model_kwargs = dict(dropout=args.dropout, conv_dropout=0.1,
-                        channels=(32, 64, 128, 256, 256), convs_per_block=args.convs_per_block)
+                        channels=(32, 64, 128, 256, 256), convs_per_block=args.convs_per_block,
+                        residual=args.residual)
     config = {k: v for k, v in vars(args).items() if k not in ("fresh", "max_batches")}
     config.update(model_kwargs=model_kwargs, batch_size=BATCH_SIZE, weight_decay=WEIGHT_DECAY,
                   label_smoothing=LABEL_SMOOTHING)
@@ -247,9 +280,10 @@ def main():
         + (f" ({torch.cuda.get_device_name(0)})" if DEVICE.type == "cuda" else ""))
     log(f"Config: scheduler={args.scheduler} lr={args.lr} mixup={args.mixup} "
         f"convs_por_bloco={args.convs_per_block} dropout={args.dropout} "
-        f"recorte_avaliacao={eval_crop} paciencia={args.patience} epocas_max={args.epochs}")
+        f"recorte_avaliacao={eval_crop} paciencia={args.patience} epocas_max={args.epochs} "
+        f"ema={args.ema} recorte_treino={args.crop} seed={args.seed} residual={args.residual}")
 
-    train_ds = FMASpecDataset(args.data_dir, split="training", train=True)
+    train_ds = FMASpecDataset(args.data_dir, split="training", train=True, crop_frames=args.crop)
     val_ds = FMASpecDataset(args.data_dir, split="validation", train=False)
     log(f"Treino: {len(train_ds)} faixas | Validação: {len(val_ds)} faixas")
     print(f"Gêneros ({train_ds.num_classes}): {train_ds.genres}")
@@ -259,6 +293,16 @@ def main():
 
     model = GenreCNN(num_classes=train_ds.num_classes, **model_kwargs).to(DEVICE)
     log(f"Parâmetros treináveis: {sum(p.numel() for p in model.parameters()):,}")
+
+    # EMA (média móvel exponencial dos pesos): uma "cópia calma" do modelo.
+    # A cada passo: peso_ema = decay * peso_ema + (1 - decay) * peso_atual.
+    # Com decay 0.999 ela lembra ~1000 passos (~5 épocas), então os "solavancos" de
+    # cada passo se cancelam. A validação e o best.pt usam essa cópia.
+    # use_buffers=True: também faz a média das estatísticas do BatchNorm.
+    ema = None
+    if args.ema > 0:
+        ema = AveragedModel(model, multi_avg_fn=make_ema_fn(args.ema), use_buffers=True)
+    eval_model = ema.module if ema is not None else model
 
     criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
@@ -274,6 +318,8 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         scaler.load_state_dict(ckpt["scaler"])
+        if ema is not None and "ema" in ckpt:
+            ema.load_state_dict(ckpt["ema"])
         start_epoch = ckpt["epoch"] + 1
         best_val_acc = ckpt["best_val_acc"]
         epochs_no_improve = ckpt["epochs_no_improve"]
@@ -296,8 +342,9 @@ def main():
             t0 = time.time()
             lr = optimizer.param_groups[0]["lr"]
             train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, scaler,
-                                              max_batches=args.max_batches, mixup_alpha=args.mixup)
-            val_loss, val_acc = run_epoch(model, val_loader, criterion,
+                                              max_batches=args.max_batches, mixup_alpha=args.mixup,
+                                              ema=ema)
+            val_loss, val_acc = run_epoch(eval_model, val_loader, criterion,
                                           max_batches=args.max_batches, eval_crop=eval_crop)
             if args.scheduler == "plateau":
                 scheduler.step(val_acc)
@@ -312,7 +359,7 @@ def main():
             if improved:
                 best_val_acc = val_acc
                 epochs_no_improve = 0
-                save_checkpoint({"model": model.state_dict(), "model_kwargs": model_kwargs,
+                save_checkpoint({"model": eval_model.state_dict(), "model_kwargs": model_kwargs,
                                  "eval_crop": eval_crop, "epoch": epoch, "val_acc": val_acc,
                                  "genres": train_ds.genres}, best_path)
             else:
@@ -331,6 +378,7 @@ def main():
             save_checkpoint({
                 "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
+                "ema": ema.state_dict() if ema is not None else None,
                 "epoch": epoch, "best_val_acc": best_val_acc,
                 "epochs_no_improve": epochs_no_improve, "history": history,
                 "early_stopped": stop,

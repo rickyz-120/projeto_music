@@ -25,7 +25,7 @@ class ConvBlock(nn.Module):
     o que deixa o bloco enxergar padrões mais complexos (mais capacidade).
     """
 
-    def __init__(self, in_ch, out_ch, drop=0.0, n_convs=1):
+    def __init__(self, in_ch, out_ch, drop=0.0, n_convs=1, residual=False):
         super().__init__()
         layers = []
         for k in range(n_convs):
@@ -34,20 +34,35 @@ class ConvBlock(nn.Module):
                 nn.BatchNorm2d(out_ch),
                 nn.ReLU(inplace=True),
             ]
-        layers += [
+        pool = [
             nn.MaxPool2d(2),
             # Dropout2d "desliga" canais (mapas de features) inteiros aleatoriamente
             nn.Dropout2d(drop) if drop > 0 else nn.Identity(),
         ]
-        self.block = nn.Sequential(*layers)
+
+        self.residual = residual
+        if residual:
+            # Conexão residual (ideia da ResNet): saída = ReLU(convs(x) + atalho(x)).
+            # O "atalho" deixa a informação (e o gradiente) passar direto pelo bloco,
+            # então as convoluções só precisam aprender a "correção" em cima da entrada.
+            # Conv 1x1 no atalho só para ajustar o número de canais (in_ch -> out_ch).
+            self.convs = nn.Sequential(*layers[:-1])  # sem o último ReLU (vem depois da soma)
+            self.shortcut = (nn.Identity() if in_ch == out_ch else nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False), nn.BatchNorm2d(out_ch)))
+            self.pool = nn.Sequential(*pool)
+        else:
+            self.block = nn.Sequential(*layers, *pool)
 
     def forward(self, x):
+        if self.residual:
+            return self.pool(torch.relu(self.convs(x) + self.shortcut(x)))
         return self.block(x)
 
 
 class GenreCNN(nn.Module):
     def __init__(self, num_classes, n_mels=128, dropout=0.4,
-                 channels=(32, 64, 128, 256, 256), conv_dropout=0.1, convs_per_block=1):
+                 channels=(32, 64, 128, 256, 256), conv_dropout=0.1, convs_per_block=1,
+                 residual=False):
         super().__init__()
 
         blocks = []
@@ -55,7 +70,7 @@ class GenreCNN(nn.Module):
         for i, out_ch in enumerate(channels):
             # Dropout2d só nos 2 últimos blocos (onde as features são mais "abstratas")
             drop = conv_dropout if i >= len(channels) - 2 else 0.0
-            blocks.append(ConvBlock(in_ch, out_ch, drop, n_convs=convs_per_block))
+            blocks.append(ConvBlock(in_ch, out_ch, drop, n_convs=convs_per_block, residual=residual))
             in_ch = out_ch
         self.features = nn.Sequential(*blocks)
 

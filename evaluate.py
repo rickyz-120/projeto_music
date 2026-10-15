@@ -1,5 +1,5 @@
 """
-evaluate.py  (versão 3 — v2 em evaluate_v2.py, v1 em evaluate_v1.py)
+evaluate.py  (versão 4 — versões antigas em versoes_antigas/)
 Avaliação FINAL no conjunto de TESTE de um modelo ou de um ENSEMBLE (média de vários modelos).
 
 IMPORTANTE: o teste deve ser usado UMA ÚNICA VEZ, no final. Se usarmos o teste para
@@ -7,8 +7,9 @@ escolher hiperparâmetros, ele deixa de ser uma medida honesta do desempenho em
 músicas "nunca vistas". Para ajustes, use sempre a validação.
 
 O train.py chama este script automaticamente ao terminar. Também pode rodar sozinho:
-    python evaluate.py                                   (checkpoints_v3/best.pt)
+    python evaluate.py                                   (checkpoints_v4/best.pt)
     python evaluate.py --ckpt A.pt B.pt --out results_final  (ensemble de A e B)
+    python evaluate.py --ckpt A.pt --split validation --out tmp  (comparar na validação)
 
 Gera na pasta de resultados:
     test_metrics.json           -> acurácia geral + acurácia por gênero
@@ -33,8 +34,8 @@ from dataset import FMASpecDataset
 from model import GenreCNN, predict_logits
 
 DATA_DIR = "data_mels"
-CHECKPOINT_PATH = os.path.join("checkpoints_v3", "best.pt")
-RESULTS_DIR = "results_v3"
+CHECKPOINT_PATH = os.path.join("checkpoints_v4", "best.pt")
+RESULTS_DIR = "results_v4"
 BATCH_SIZE = 16
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -64,7 +65,7 @@ def load_model(path, num_classes):
     return model, ckpt
 
 
-def plot_confusion_matrix(cm, genres, path):
+def plot_confusion_matrix(cm, genres, path, split_pt="teste"):
     # Normaliza por linha: cada linha mostra, para um gênero verdadeiro,
     # a % de músicas que o modelo previu como cada gênero.
     cm_pct = cm / cm.sum(axis=1, keepdims=True).clip(min=1) * 100
@@ -76,7 +77,7 @@ def plot_confusion_matrix(cm, genres, path):
     ax.set_yticks(range(len(genres)), genres)
     ax.set_xlabel("Gênero previsto")
     ax.set_ylabel("Gênero verdadeiro")
-    ax.set_title("Matriz de confusão — conjunto de teste")
+    ax.set_title(f"Matriz de confusão — conjunto de {split_pt}")
     for i in range(len(genres)):
         for j in range(len(genres)):
             color = "white" if cm_pct[i, j] > 50 else "black"
@@ -87,18 +88,20 @@ def plot_confusion_matrix(cm, genres, path):
     plt.close(fig)
 
 
-def main(checkpoint_path=CHECKPOINT_PATH, data_dir=DATA_DIR, results_dir=RESULTS_DIR):
+def main(checkpoint_path=CHECKPOINT_PATH, data_dir=DATA_DIR, results_dir=RESULTS_DIR, split="test"):
     """checkpoint_path pode ser um caminho ou uma LISTA de caminhos.
     Com uma lista, avalia o ENSEMBLE: a média das probabilidades de todos os modelos
-    (modelos diferentes erram em músicas diferentes, então a média costuma acertar mais)."""
+    (modelos diferentes erram em músicas diferentes, então a média costuma acertar mais).
+    split="validation" avalia na validação: serve para COMPARAR modelos/ensembles sem gastar o teste."""
+    split_pt = "teste" if split == "test" else "validação"
     os.makedirs(results_dir, exist_ok=True)
     paths = [checkpoint_path] if isinstance(checkpoint_path, str) else list(checkpoint_path)
 
-    test_ds = FMASpecDataset(data_dir, split="test", train=False)
+    test_ds = FMASpecDataset(data_dir, split=split, train=False)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
                              num_workers=0, pin_memory=DEVICE.type == "cuda")
     genres = test_ds.genres
-    print(f"Avaliando no TESTE: {len(test_ds)} faixas")
+    print(f"Avaliando em {split_pt.upper()}: {len(test_ds)} faixas")
 
     probs_list, individual = [], {}
     for p in paths:
@@ -123,7 +126,7 @@ def main(checkpoint_path=CHECKPOINT_PATH, data_dir=DATA_DIR, results_dir=RESULTS
     report = classification_report(y_true, y_pred, labels=list(range(len(genres))),
                                    target_names=genres, digits=4, zero_division=0)
     print(report)
-    print(f"Acurácia no teste: {acc:.4f}")
+    print(f"Acurácia em {split_pt}: {acc:.4f}")
 
     per_class = pd.DataFrame({
         "genero": genres,
@@ -139,6 +142,7 @@ def main(checkpoint_path=CHECKPOINT_PATH, data_dir=DATA_DIR, results_dir=RESULTS
         f.write(f"Acurácia no teste: {acc:.4f}\n\n{report}")
 
     metrics = {
+        "split": split,
         "test_accuracy": acc,
         "n_test": int(len(y_true)),
         "per_class_accuracy": {g: float(a) for g, a in zip(genres, per_class_acc)},
@@ -148,7 +152,7 @@ def main(checkpoint_path=CHECKPOINT_PATH, data_dir=DATA_DIR, results_dir=RESULTS
     with open(os.path.join(results_dir, "test_metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
 
-    plot_confusion_matrix(cm, genres, os.path.join(results_dir, "confusion_matrix.png"))
+    plot_confusion_matrix(cm, genres, os.path.join(results_dir, "confusion_matrix.png"), split_pt)
     print(f"Resultados salvos em {results_dir}/")
     return metrics
 
@@ -158,5 +162,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", nargs="+", default=[CHECKPOINT_PATH], help="um ou mais checkpoints")
     parser.add_argument("--out", default=RESULTS_DIR)
+    parser.add_argument("--split", choices=["test", "validation"], default="test",
+                        help="validation = comparar modelos sem gastar o teste")
     args = parser.parse_args()
-    main(checkpoint_path=args.ckpt, results_dir=args.out)
+    main(checkpoint_path=args.ckpt, results_dir=args.out, split=args.split)
